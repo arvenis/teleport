@@ -89,6 +89,7 @@ import (
 	"github.com/gravitational/teleport/lib/agentless"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/auth/accesspoint"
+	"github.com/gravitational/teleport/lib/auth/oidcservice"
 	"github.com/gravitational/teleport/lib/auth/authclient"
 	"github.com/gravitational/teleport/lib/auth/keygen"
 	"github.com/gravitational/teleport/lib/auth/keystore"
@@ -160,6 +161,7 @@ import (
 	"github.com/gravitational/teleport/lib/resumption"
 	"github.com/gravitational/teleport/lib/reversetunnel"
 	"github.com/gravitational/teleport/lib/reversetunnelclient"
+	"github.com/gravitational/teleport/lib/loginrule"
 	"github.com/gravitational/teleport/lib/scopes"
 	secretsscannerproxy "github.com/gravitational/teleport/lib/secretsscanner/proxy"
 	"github.com/gravitational/teleport/lib/service/servicecfg"
@@ -2631,6 +2633,14 @@ func (process *TeleportProcess) initAuthService() error {
 		if err != nil {
 			return trace.Wrap(err, "starting upload completer")
 		}
+	}
+
+	// Register the generic OIDC service so that any standards-compliant OIDC
+	// provider (Dex, Keycloak, Okta, Auth0, …) can be used for SSO in OSS.
+	// Enterprise code may override this by calling SetOIDCService again with its
+	// own implementation after this point.
+	if err := registerOIDCService(authServer); err != nil {
+		return trace.Wrap(err, "registering OIDC service")
 	}
 
 	connector, err := process.connectToAuthService(types.RoleAdmin)
@@ -7638,4 +7648,119 @@ func (process *TeleportProcess) newExternalAuditStorageConfigurator() (*external
 	}
 	statusService := local.NewStatusService(process.backend)
 	return externalauditstorage.NewConfigurator(process.ExitContext(), easSvc, integrationSvc, statusService)
+}
+
+// registerOIDCService wires up the community OIDC service into the auth server.
+// It creates a thin adapter that bridges oidcservice.Backend to auth.Server's
+// actual methods, then registers the service so that any OIDC connector can be
+// used for SSO without an enterprise licence.
+func registerOIDCService(authServer *auth.Server) error {
+	backend := &oidcServiceAdapter{server: authServer}
+	svc, err := oidcservice.New(oidcservice.Config{Backend: backend})
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	authServer.SetOIDCService(svc)
+	return nil
+}
+
+// oidcServiceAdapter bridges auth.Server to the oidcservice.Backend interface.
+// It exists so that storage operations go directly to the backend (bypassing
+// the SSO-service layer that would cause infinite recursion) while every other
+// call simply delegates to the embedded *auth.Server.
+type oidcServiceAdapter struct {
+	server *auth.Server
+}
+
+// GetOIDCConnector reads a connector from the cache (high-read path).
+func (a *oidcServiceAdapter) GetOIDCConnector(ctx context.Context, id string, withSecrets bool) (types.OIDCConnector, error) {
+	return a.server.GetOIDCConnector(ctx, id, withSecrets)
+}
+
+// StoreOIDCAuthRequest persists an auth request directly to the backend,
+// bypassing auth.Server.CreateOIDCAuthRequest (which is the SSO entrypoint).
+func (a *oidcServiceAdapter) StoreOIDCAuthRequest(ctx context.Context, req types.OIDCAuthRequest, ttl time.Duration) error {
+	return a.server.Services.CreateOIDCAuthRequest(ctx, req, ttl)
+}
+
+// LoadOIDCAuthRequest retrieves an auth request directly from the backend.
+func (a *oidcServiceAdapter) LoadOIDCAuthRequest(ctx context.Context, stateToken string) (*types.OIDCAuthRequest, error) {
+	return a.server.Services.GetOIDCAuthRequest(ctx, stateToken)
+}
+
+func (a *oidcServiceAdapter) CreateSSODiagnosticInfo(ctx context.Context, authKind, authRequestID string, entry types.SSODiagnosticInfo) error {
+	return a.server.Services.CreateSSODiagnosticInfo(ctx, authKind, authRequestID, entry)
+}
+
+func (a *oidcServiceAdapter) GetRole(ctx context.Context, name string) (types.Role, error) {
+	return a.server.GetRole(ctx, name)
+}
+
+func (a *oidcServiceAdapter) GetUser(ctx context.Context, name string, withSecrets bool) (types.User, error) {
+	return a.server.GetUser(ctx, name, withSecrets)
+}
+
+func (a *oidcServiceAdapter) CreateUser(ctx context.Context, user types.User) (types.User, error) {
+	return a.server.CreateUser(ctx, user)
+}
+
+func (a *oidcServiceAdapter) UpdateUser(ctx context.Context, user types.User) (types.User, error) {
+	return a.server.UpdateUser(ctx, user)
+}
+
+func (a *oidcServiceAdapter) CallLoginHooks(ctx context.Context, user types.User) error {
+	return a.server.CallLoginHooks(ctx, user)
+}
+
+func (a *oidcServiceAdapter) GetUserOrLoginState(ctx context.Context, name string) (services.UserState, error) {
+	return a.server.GetUserOrLoginState(ctx, name)
+}
+
+func (a *oidcServiceAdapter) GetLoginRuleEvaluator() loginrule.Evaluator {
+	return a.server.GetLoginRuleEvaluator()
+}
+
+func (a *oidcServiceAdapter) ClientOptionsForLogin(userState services.UserState) (authclient.ClientOptions, error) {
+	return a.server.ClientOptionsForLogin(userState)
+}
+
+func (a *oidcServiceAdapter) IssueWebSession(ctx context.Context, req oidcservice.IssueWebSessionRequest) (types.WebSession, error) {
+	return a.server.CreateWebSessionFromReq(ctx, auth.NewWebSessionRequest{
+		User:                 req.User,
+		Roles:                req.Roles,
+		Traits:               req.Traits,
+		SessionTTL:           req.SessionTTL,
+		LoginTime:            req.LoginTime,
+		LoginIP:              req.LoginIP,
+		LoginUserAgent:       req.LoginUserAgent,
+		AttestWebSession:     req.AttestSession,
+		CreateDeviceWebToken: req.CreateDeviceToken,
+		Scope:                req.Scope,
+	})
+}
+
+func (a *oidcServiceAdapter) IssueSessionCerts(ctx context.Context, req oidcservice.IssueSessionCertsRequest) ([]byte, []byte, error) {
+	return a.server.CreateSessionCerts(ctx, &auth.SessionCertsRequest{
+		UserState:         req.UserState,
+		SessionTTL:        req.SessionTTL,
+		SSHPubKey:         req.SSHPubKey,
+		TLSPubKey:         req.TLSPubKey,
+		Compatibility:     req.Compatibility,
+		RouteToCluster:    req.RouteToCluster,
+		KubernetesCluster: req.KubernetesCluster,
+		LoginIP:           req.LoginIP,
+		Scope:             req.Scope,
+	})
+}
+
+func (a *oidcServiceAdapter) GetCertAuthority(ctx context.Context, id types.CertAuthID, withSecrets bool) (types.CertAuthority, error) {
+	return a.server.GetCertAuthority(ctx, id, withSecrets)
+}
+
+func (a *oidcServiceAdapter) GetClusterName(ctx context.Context) (types.ClusterName, error) {
+	return a.server.GetClusterName(ctx)
+}
+
+func (a *oidcServiceAdapter) GetClock() clockwork.Clock {
+	return a.server.GetClock()
 }

@@ -981,6 +981,11 @@ func (h *Handler) bindDefaultEndpoints() {
 	h.GET("/webapi/github/callback", h.WithMetaRedirect(h.githubCallback))
 	h.POST("/webapi/github/login/console", h.WithLimiter(h.githubLoginConsole))
 
+	// Generic OIDC connector handlers (Dex, Keycloak, Okta, Auth0, …)
+	h.GET("/webapi/oidc/login/web", h.WithRedirect(h.oidcLoginWeb))
+	h.GET("/v1/webapi/oidc/callback", h.WithMetaRedirect(h.oidcCallback))
+	h.POST("/webapi/oidc/login/console", h.WithLimiter(h.oidcLoginConsole))
+
 	// MFA public endpoints.
 	h.POST("/webapi/sites/:site/mfa/required", h.WithClusterAuth(h.isMFARequired))
 	h.POST("/webapi/mfa/login/begin", h.WithLimiter(h.mfaLoginBegin))
