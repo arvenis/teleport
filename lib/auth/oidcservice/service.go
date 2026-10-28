@@ -93,16 +93,16 @@ type Backend interface {
 // IssueWebSessionRequest carries the parameters needed to create a web session
 // after a successful OIDC login.
 type IssueWebSessionRequest struct {
-	User            string
-	Roles           []string
-	Traits          map[string][]string
-	SessionTTL      time.Duration
-	LoginTime       time.Time
-	LoginIP         string
-	LoginUserAgent  string
-	AttestSession   bool
+	User              string
+	Roles             []string
+	Traits            map[string][]string
+	SessionTTL        time.Duration
+	LoginTime         time.Time
+	LoginIP           string
+	LoginUserAgent    string
+	AttestSession     bool
 	CreateDeviceToken bool
-	Scope           string
+	Scope             string
 }
 
 // IssueSessionCertsRequest carries the parameters needed to issue SSH/TLS
@@ -420,12 +420,7 @@ func (s *Service) validateOIDCAuthCallbackHelper(ctx context.Context, q url.Valu
 				ConnectorID: connector.GetName(),
 				Username:    idToken.Subject,
 			},
-			Req: authclient.OIDCAuthRequest{
-				ConnectorID:       req.ConnectorID,
-				CSRFToken:         req.CSRFToken,
-				CreateWebSession:  req.CreateWebSession,
-				ClientRedirectURL: req.ClientRedirectURL,
-			},
+			Req: oidcAuthRequestFromProto(req),
 		}, nil
 	}
 
@@ -444,12 +439,7 @@ func (s *Service) validateOIDCAuthCallbackHelper(ctx context.Context, q url.Valu
 			ConnectorID: connector.GetName(),
 			Username:    idToken.Subject,
 		},
-		Req: authclient.OIDCAuthRequest{
-			ConnectorID:       req.ConnectorID,
-			CSRFToken:         req.CSRFToken,
-			CreateWebSession:  req.CreateWebSession,
-			ClientRedirectURL: req.ClientRedirectURL,
-		},
+		Req: oidcAuthRequestFromProto(req),
 	}
 
 	// Issue web session (browser flow).
@@ -547,6 +537,20 @@ func (s *Service) discover(ctx context.Context, issuerURL string) (*gooidc.Provi
 		return nil, trace.Wrap(err, "OIDC discovery failed for issuer %q", issuerURL)
 	}
 	return provider, nil
+}
+
+// oidcAuthRequestFromProto converts the stored auth request into the form
+// returned to the proxy. The public keys must be carried over: the proxy
+// callback uses them to tell the console (tsh) flow apart from a failed one.
+func oidcAuthRequestFromProto(req *types.OIDCAuthRequest) authclient.OIDCAuthRequest {
+	return authclient.OIDCAuthRequest{
+		ConnectorID:       req.ConnectorID,
+		SSHPubKey:         req.SshPublicKey,
+		TLSPubKey:         req.TlsPublicKey,
+		CSRFToken:         req.CSRFToken,
+		CreateWebSession:  req.CreateWebSession,
+		ClientRedirectURL: req.ClientRedirectURL,
+	}
 }
 
 // pickRedirectURL returns the redirect URL from the connector's list that

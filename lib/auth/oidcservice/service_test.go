@@ -614,6 +614,10 @@ func TestValidateOIDCAuthCallback_CLICerts(t *testing.T) {
 	assert.Equal(t, []byte("fake-ssh-cert"), resp.Cert)
 	assert.Equal(t, []byte("fake-tls-cert"), resp.TLSCert)
 	assert.Nil(t, resp.Session)
+	// The proxy callback needs the public keys to take the console path.
+	assert.Equal(t, []byte("fake-ssh-pubkey"), resp.Req.SSHPubKey)
+	assert.Equal(t, []byte("fake-tls-pubkey"), resp.Req.TLSPubKey)
+	assert.False(t, resp.Req.CreateWebSession)
 }
 
 // TestValidateOIDCAuthCallback_PKCE checks that the code_verifier is only sent
