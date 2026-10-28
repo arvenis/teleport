@@ -204,6 +204,8 @@ type fakeOIDCProvider struct {
 	clock       clockwork.Clock
 	mu          sync.Mutex
 	codeToToken map[string][]byte
+	// lastTokenForm is the form of the most recent token endpoint request.
+	lastTokenForm url.Values
 }
 
 func newFakeOIDCProvider(t *testing.T) *fakeOIDCProvider {
@@ -269,6 +271,7 @@ func (p *fakeOIDCProvider) handleToken(w http.ResponseWriter, r *http.Request) {
 	code := r.FormValue("code")
 	p.mu.Lock()
 	resp, ok := p.codeToToken[code]
+	p.lastTokenForm = r.PostForm
 	p.mu.Unlock()
 	if !ok {
 		w.Header().Set("Content-Type", "application/json")
@@ -611,6 +614,71 @@ func TestValidateOIDCAuthCallback_CLICerts(t *testing.T) {
 	assert.Equal(t, []byte("fake-ssh-cert"), resp.Cert)
 	assert.Equal(t, []byte("fake-tls-cert"), resp.TLSCert)
 	assert.Nil(t, resp.Session)
+}
+
+// TestValidateOIDCAuthCallback_PKCE checks that the code_verifier is only sent
+// to the token endpoint when a code_challenge was sent in the auth URL. The
+// console flow always sets a verifier, so with PKCE disabled on the connector
+// it must not leak into the exchange (Google answers invalid_grant).
+func TestValidateOIDCAuthCallback_PKCE(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		pkceMode constants.OIDCPKCEMode
+		wantPKCE bool
+	}{
+		{name: "disabled", pkceMode: constants.OIDCPKCEModeDisabled, wantPKCE: false},
+		{name: "unset", pkceMode: "", wantPKCE: false},
+		{name: "enabled", pkceMode: constants.OIDCPKCEModeEnabled, wantPKCE: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			provider := newFakeOIDCProvider(t)
+			connector := buildTestConnector(t, provider.issuerURL())
+			connector.SetPKCEMode(tc.pkceMode)
+			backend := newTestBackend(clockwork.NewRealClock(), connector)
+
+			svc, err := New(Config{Backend: backend})
+			require.NoError(t, err)
+
+			const verifier = "test-pkce-verifier-0123456789-0123456789-0123456789"
+			authReq, err := svc.CreateOIDCAuthRequest(context.Background(), types.OIDCAuthRequest{
+				ConnectorID:       "test-connector",
+				SshPublicKey:      []byte("fake-ssh-pubkey"),
+				TlsPublicKey:      []byte("fake-tls-pubkey"),
+				ClientRedirectURL: "http://127.0.0.1:58541/callback?secret_key=test",
+				PkceVerifier:      verifier,
+			})
+			require.NoError(t, err)
+
+			authURL, err := url.Parse(authReq.RedirectURL)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantPKCE, authURL.Query().Has("code_challenge"))
+
+			const code = "auth-code-pkce"
+			provider.issueIDToken(t, code, "teleport", "sub-bob", map[string]interface{}{
+				"email":  "bob@example.com",
+				"groups": []string{"admins"},
+			})
+
+			_, err = svc.ValidateOIDCAuthCallback(context.Background(), url.Values{
+				"code":  []string{code},
+				"state": []string{authReq.StateToken},
+			})
+			require.NoError(t, err)
+
+			provider.mu.Lock()
+			form := provider.lastTokenForm
+			provider.mu.Unlock()
+			if tc.wantPKCE {
+				assert.Equal(t, verifier, form.Get("code_verifier"))
+			} else {
+				assert.False(t, form.Has("code_verifier"))
+			}
+		})
+	}
 }
 
 func TestValidateOIDCAuthCallback_UnmappedClaims(t *testing.T) {

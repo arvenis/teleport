@@ -304,9 +304,12 @@ func (s *Service) validateOIDCAuthCallbackHelper(ctx context.Context, q url.Valu
 		Endpoint:     provider.Endpoint(),
 	}
 
-	// Exchange code → tokens (optionally with PKCE verifier).
+	// Exchange code → tokens (optionally with PKCE verifier). The verifier is
+	// only sent when a challenge was sent in CreateOIDCAuthRequest; providers
+	// such as Google reject a code_verifier without a matching challenge
+	// (invalid_grant), and the console flow always carries a verifier.
 	var exchangeOpts []oauth2.AuthCodeOption
-	if req.PkceVerifier != "" {
+	if connector.IsPKCEEnabled() && req.PkceVerifier != "" {
 		exchangeOpts = append(exchangeOpts, oauth2.VerifierOption(req.PkceVerifier))
 	}
 

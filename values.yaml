@@ -1,0 +1,10 @@
+clusterName: teleport
+operator:
+  enabled: true
+  image: teleport-operator
+authentication:
+  type: oidc
+image: teleport
+proxy:
+  publicAddr: "localhost:3080"
+proxyListenerMode: multiplex    

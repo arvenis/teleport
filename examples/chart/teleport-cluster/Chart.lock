@@ -1,0 +1,12 @@
+dependencies:
+- name: teleport-operator
+  repository: ""
+  version: 19.0.0-prealpha.2
+- name: teleport-proxy-lib
+  repository: ""
+  version: 19.0.0-prealpha.2
+- name: teleport-util-lib
+  repository: ""
+  version: 19.0.0-prealpha.2
+digest: sha256:d2bfd6df9a57c9a9544d991b0c081ffab532ce2dea741e4414f243f8f054c020
+generated: "2026-06-29T18:36:44.079853437Z"

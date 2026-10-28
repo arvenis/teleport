@@ -1,0 +1,15 @@
+apiVersion: resources.teleport.dev/v3
+kind: TeleportOIDCConnector
+metadata:
+  name: dex
+spec:
+  issuer_url: "http://dex.dex.svc.cluster.local:5556"
+  client_id: "teleport"
+  client_secret: "teleport-secret"
+  redirect_url: 
+    - "https://localhost:3080/v1/webapi/oidc/callback"
+  scope: ["openid", "profile", "email"]
+  claims_to_roles:
+    - claim: "groups"
+      value: "admins"
+      roles: ["editor"]
